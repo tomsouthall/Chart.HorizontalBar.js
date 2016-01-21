@@ -40,6 +40,8 @@
 		//String - A legend template
 		legendTemplate : "<ul class=\"<%=name.toLowerCase()%>-legend\"><% for (var i=0; i<datasets.length; i++){%><li><span style=\"background-color:<%=datasets[i].fillColor%>\"></span><%if(datasets[i].label){%><%=datasets[i].label%><%}%></li><%}%></ul>"
 
+                //String - axis to stack bars on
+		stacked : 'y'
 	};
 
   Chart.HorizontalRectangle = Chart.Element.extend({
@@ -53,6 +55,7 @@
 
 			// Canvas doesn't allow us to stroke inside the width so we can
 			// adjust the sizes to fit if we're setting a stroke on the line
+			if (right < this.left) return;
 			if (this.showStroke){
 				top += halfStroke;
 				bottom -= halfStroke;
@@ -116,7 +119,7 @@
 					//The padding between datasets is to the right of each bar, providing that there are more than 1 dataset
 					var baseHeight = this.calculateBaseHeight() - ((datasetCount) * options.barDatasetSpacing);
 
-					return (baseHeight / datasetCount);
+					return (options.stacked == "z" || options.stacked == "x") ? baseHeight : (baseHeight / datasetCount);
 				},
 
 				calculateXInvertXY : function(value) {
@@ -133,7 +136,7 @@
 					var yHeight = this.calculateBaseHeight(),
 						yAbsolute = (this.endPoint + this.calculateYInvertXY(barIndex) - (yHeight / 2)) - 5,
 						barHeight = this.calculateBarHeight(datasetCount);
-					if (datasetCount > 1) yAbsolute = yAbsolute + (barHeight * (datasetIndex - 1)) - (datasetIndex * options.barDatasetSpacing) + barHeight/2;
+					if (datasetCount > 1 && options.stacked != "z" && options.stacked != "x") yAbsolute = yAbsolute + (barHeight * (datasetIndex - 1)) - (datasetIndex * options.barDatasetSpacing) + barHeight/2;
 					return yAbsolute;
 				},
 
@@ -152,7 +155,8 @@
     			this.buildCalculatedLabels();
     			if(this.buildYLabelCounter === 0) this.yLabels = this.xLabels;
           this.xLabels = this.calculatedLabels;
-    			this.yLabelWidth = (this.display && this.showLabels) ? helpers.longestText(this.ctx,this.font,this.yLabels) : 0;
+          
+    			this.yLabelWidth = (this.display && this.showLabels) ? helpers.longestText(this.ctx,this.font,this.yLabels) + 10 : 0;
     		},
 
         calculateX : function(index){
@@ -299,27 +303,33 @@
 			});
 
 			//Iterate through each of the datasets, and build this into a property of the chart
+			var dataPointValues = [];
 			helpers.each(data.datasets,function(dataset,datasetIndex){
-
-				var datasetObject = {
-					label : dataset.label || null,
-					fillColor : dataset.fillColor,
-					strokeColor : dataset.strokeColor,
-					bars : []
-				};
-
-				this.datasets.push(datasetObject);
-
-				helpers.each(dataset.data,function(dataPoint,index){
+			        helpers.each(dataset.data,function(dataPoint,index){
+					if (!dataPointValues[index]) dataPointValues[index] = [];   
+					dataPointValues[index].push({"index":datasetIndex,"value":dataPoint});
+				},this);
+			},this);
+			
+			helpers.each(dataPointValues,function(dataset,datasetIndex){ 
+				if (this.options.stacked == "z") dataset.sort(function(a, b){return b.value-a.value});
+				helpers.each(dataset,function(dataPoint,index){
+				        var datasetObject = {
+					    label : data.datasets[dataPoint.index].label || null,
+					    fillColor : data.datasets[dataPoint.index].fillColor,
+					    strokeColor : data.datasets[dataPoint.index].strokeColor,
+					    bars : []
+					}
+				        if (!this.datasets[dataPoint.index]) this.datasets[dataPoint.index] = (JSON.parse(JSON.stringify(datasetObject)));
 					//Add a new point for each piece of data, passing any required data to draw.
-					datasetObject.bars.push(new this.BarClass({
-						value : dataPoint,
-						label : data.labels[index],
-						datasetLabel: dataset.label,
-						strokeColor : dataset.strokeColor,
-						fillColor : dataset.fillColor,
-						highlightFill : dataset.highlightFill || dataset.fillColor,
-						highlightStroke : dataset.highlightStroke || dataset.strokeColor
+					this.datasets[index].bars.push(new this.BarClass({
+						value : dataPoint.value,
+						label : data.labels[datasetIndex],
+						datasetLabel: data.datasets[dataPoint.index].label,
+						strokeColor : data.datasets[dataPoint.index].strokeColor,
+						fillColor : data.datasets[dataPoint.index].fillColor,
+						highlightFill : data.datasets[dataPoint.index].highlightFill || data.datasets[dataPoint.index].fillColor,
+						highlightStroke : data.datasets[dataPoint.index].highlightStroke || data.datasets[dataPoint.index].strokeColor
 					}));
 				},this);
 
@@ -381,9 +391,18 @@
 
 			var dataTotal = function(){
 				var values = [];
-				self.eachBars(function(bar){
+				if (self.options.stacked == 'x') {
+				    helpers.each(self.datasets,function(dataset,datasetIndex){
+					helpers.each(dataset.bars,function(bar,index){
+					    if (!values[index]) values[index] = 0;
+					    values[index] += bar.value;
+					},self);
+				    },self);
+				} else {
+				    self.eachBars(function(bar){
 					values.push(bar.value);
-				});
+				    });
+				}
 				return values;
 			};
 
@@ -486,16 +505,24 @@
 			helpers.each(this.datasets,function(dataset,datasetIndex){
 				helpers.each(dataset.bars,function(bar,index){
 					if (bar.hasValue()){
-						bar.left = Math.round(this.scale.xScalePaddingLeft);
+					        if (!bar.startX) {
+						    bar.startX = 0;
+						    bar._saved.left = Math.round(this.scale.xScalePaddingLeft);
+						}
+						if (this.datasets[datasetIndex + 1] && this.options.stacked == "x") {	
+							this.datasets[datasetIndex + 1].bars[index].startX = ((bar.startX - Math.round(this.scale.xScalePaddingLeft)) + this.scale.calculateXInvertXY(bar.value)); 
+							this.datasets[datasetIndex + 1].bars[index]._saved.left = ((this.datasets[datasetIndex + 1].bars[index].startX - ((((this.scale.calculateXInvertXY(bar.value) + bar.startX) - bar._saved.x) * ease)))/100) + Math.round(this.scale.xScalePaddingLeft);
+							if (!this.datasets[datasetIndex + 1].bars[index]._saved.left) this.datasets[datasetIndex + 1].bars[index]._saved.left = Math.round(this.scale.xScalePaddingLeft);   
+						}
 						//Transition then draw
 						bar.transition({
-							x : this.scale.calculateXInvertXY(bar.value),
+							x : this.scale.calculateXInvertXY(bar.value) + bar.startX,
 							y : this.scale.calculateBarY(this.datasets.length, datasetIndex, index),
-							height : this.scale.calculateBarHeight(this.datasets.length)
+							height : this.scale.calculateBarHeight(this.datasets.length),
+							left : Math.round(this.scale.xScalePaddingLeft) + bar.startX
 						}, easingDecimal).draw();
 					}
 				},this);
-
 			},this);
 		}
 	});
